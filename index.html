@@ -2089,10 +2089,23 @@
             });
         }
 
-        function saveManagerTask(userId, taskId, changes) {
+        function managerTaskIdsByScope(userId, task, scope) {
+            if (scope !== 'series' || !task.seriesId) return new Set([task.id]);
+            return new Set(readStoredList(`siga-tarefas::${userId}`).filter(item => item.seriesId === task.seriesId && !isPastTask(item)).map(item => item.id));
+        }
+
+        async function askManagerTaskScope(task, action) {
+            if (!task.seriesId) return 'single';
+            const answer = await sitePrompt(`${action} esta tarefa somente neste dia ou todas as ocorrências futuras?\nDigite 1 para somente este dia ou 2 para todas as futuras.`, '1', `${action} tarefa recorrente`);
+            return answer === '2' ? 'series' : answer === '1' ? 'single' : null;
+        }
+
+        function saveManagerTask(userId, taskId, changes, scope = 'single') {
             const key = `siga-tarefas::${userId}`;
             let tasks = []; try { tasks = JSON.parse(localStorage.getItem(key)) || []; } catch (error) { tasks = []; }
-            const updated = tasks.map(task => task.id === taskId ? { ...task, ...changes } : task);
+            const selectedTask = tasks.find(task => task.id === taskId);
+            const ids = selectedTask ? managerTaskIdsByScope(userId, selectedTask, scope) : new Set([taskId]);
+            const updated = tasks.map(task => ids.has(task.id) ? { ...task, ...changes } : task);
             localStorage.setItem(key, JSON.stringify(updated));
             const session = getSession();
             const previousViewing = session.viewingUserId;
@@ -2115,23 +2128,26 @@
             session.viewingUserId = previousViewing; saveSession(session);
         }
 
-        function deleteManagerTask(userId, taskId) {
+        function deleteManagerTask(userId, taskId, scope = 'single') {
             const key = `siga-tarefas::${userId}`;
-            const tasks = readStoredList(key).filter(task => task.id !== taskId);
+            const previous = readStoredList(key);
+            const selectedTask = previous.find(task => task.id === taskId);
+            const ids = selectedTask ? managerTaskIdsByScope(userId, selectedTask, scope) : new Set([taskId]);
+            const tasks = previous.filter(task => !ids.has(task.id));
             localStorage.setItem(key, JSON.stringify(tasks));
             const session = getSession();
             const previousViewing = session.viewingUserId;
             session.viewingUserId = userId;
             saveSession(session);
-            syncStoredList(key, tasks, [taskId]);
+            syncStoredList(key, tasks, [...ids]);
             session.viewingUserId = previousViewing;
             saveSession(session);
         }
 
         let managerEditingTask = null;
 
-        function openManagerTaskEditor(task) {
-            managerEditingTask = { userId: task.vendedorId, taskId: task.id };
+        function openManagerTaskEditor(task, scope = 'single') {
+            managerEditingTask = { userId: task.vendedorId, taskId: task.id, scope };
             document.getElementById('new-task-title').textContent = 'Editar tarefa da equipe';
             document.getElementById('new-task-title-input').value = task.title;
             document.getElementById('new-task-time-input').value = task.time;
@@ -2259,15 +2275,21 @@
             const edit = event.target.closest('[data-manager-edit-task]');
             if (edit && getSession()?.role === 'gerente') {
                 const task = collectAllTasksForStore(getSession().lojaId).find(item => item.id === edit.dataset.managerEditTask && item.vendedorId === edit.dataset.taskOwner);
-                if (task && !isPastTask(task)) openManagerTaskEditor(task);
+                if (task && !isPastTask(task)) {
+                    const scope = await askManagerTaskScope(task, 'Editar');
+                    if (scope) openManagerTaskEditor(task, scope);
+                }
             }
             const remove = event.target.closest('[data-manager-delete-task]');
             if (remove && getSession()?.role === 'gerente') {
                 const task = collectAllTasksForStore(getSession().lojaId).find(item => item.id === remove.dataset.managerDeleteTask && item.vendedorId === remove.dataset.taskOwner);
                 if (task && !isPastTask(task)) {
-                    deleteManagerTask(task.vendedorId, task.id);
+                    if (!(await siteConfirm('Excluir esta tarefa?'))) return;
+                    const scope = await askManagerTaskScope(task, 'Excluir');
+                    if (!scope) return;
+                    deleteManagerTask(task.vendedorId, task.id, scope);
                     renderManagerOverview();
-                    showToast('Tarefa excluída.');
+                    showToast(scope === 'series' ? 'Série de tarefas excluída.' : 'Tarefa excluída.');
                 }
             }
         });
@@ -3042,11 +3064,43 @@
             });
         }
 
+        function extendRecurringTaskHorizon(tasks) {
+            if (!Array.isArray(tasks)) return tasks;
+            const additions = [];
+            const series = new Map();
+            tasks.filter(task => task.seriesId && Array.isArray(task.repeatDays) && task.repeatDays.length).forEach(task => {
+                const current = series.get(task.seriesId) || { task, lastDate: task.date };
+                if (task.date > current.lastDate) current.lastDate = task.date;
+                series.set(task.seriesId, current);
+            });
+            const existing = new Set(tasks.map(task => `${task.seriesId || task.id}|${task.date}`));
+            series.forEach(({ task, lastDate }) => {
+                const start = new Date(`${lastDate}T12:00:00`);
+                const end = new Date(start);
+                end.setDate(end.getDate() + 365);
+                for (const cursor = new Date(start.setDate(start.getDate() + 1)); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
+                    if (!task.repeatDays.includes(cursor.getDay())) continue;
+                    const date = getLocalDateKey(cursor);
+                    const key = `${task.seriesId}|${date}`;
+                    if (existing.has(key)) continue;
+                    existing.add(key);
+                    additions.push({ ...task, id: crypto.randomUUID(), date, completed: false, observation: '' });
+                }
+            });
+            return additions.length ? [...tasks, ...additions] : tasks;
+        }
+
         function getTasks() {
             cleanupOldTasks();
             try {
                 const savedTasks = JSON.parse(localStorage.getItem(taskStorageKey()));
-                return Array.isArray(savedTasks) ? savedTasks : [];
+                if (!Array.isArray(savedTasks)) return [];
+                const extendedTasks = extendRecurringTaskHorizon(savedTasks);
+                if (extendedTasks.length !== savedTasks.length) {
+                    localStorage.setItem(taskStorageKey(), JSON.stringify(extendedTasks));
+                    syncStoredList(taskStorageKey(), extendedTasks);
+                }
+                return extendedTasks;
             } catch (error) {
                 return [];
             }
@@ -3070,12 +3124,10 @@
             const seriesId = crypto.randomUUID();
             const tasks = [];
             const start = new Date(`${startDate}T12:00:00`);
-            const weekStart = new Date(start);
-            weekStart.setDate(start.getDate() - start.getDay());
-            const weekEnd = new Date(weekStart);
-            weekEnd.setDate(weekStart.getDate() + 6);
-            const cursor = new Date(weekStart);
-            for (; cursor <= weekEnd; cursor.setDate(cursor.getDate() + 1)) {
+            const end = new Date(start);
+            end.setDate(end.getDate() + 365);
+            const cursor = new Date(start);
+            for (; cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
                 if (!repeatDays.includes(cursor.getDay())) continue;
                 tasks.push({ id: crypto.randomUUID(), title, time, owner: currentTaskOwnerRole(), completed: false, observation: '', date: getLocalDateKey(cursor), seriesId, repeatDays });
             }
@@ -4169,7 +4221,7 @@
                 const time = document.getElementById('new-task-time-input').value;
                 if (!title || !time) return;
                 if (managerEditingTask) {
-                    saveManagerTask(managerEditingTask.userId, managerEditingTask.taskId, { title, time });
+                    saveManagerTask(managerEditingTask.userId, managerEditingTask.taskId, { title, time }, managerEditingTask.scope);
                     event.target.reset();
                     document.getElementById('task-repeat-options').classList.add('hidden');
                     closeNewTaskModal();
