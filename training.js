@@ -179,6 +179,23 @@
     function init() { if (!document.getElementById('app-shell')) return; buildShell(); enhanceTrainingForm(); globalShowPage = window.showPage; if (globalShowPage && !window.trainingShowPageWrapped) { window.showPage = pageName => { hideTrainingPages(); globalShowPage(pageName); }; window.trainingShowPageWrapped = true; } bind(); document.addEventListener('load', event => { const frame = event.target.closest?.('#training-player iframe[src*="youtube.com"]'); if (!frame) return; frame.contentWindow?.postMessage(JSON.stringify({ event: 'listening', id: frame.id, channel: 'widget' }), '*'); frame.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onStateChange'], id: frame.id, channel: 'widget' }), '*'); }, true); window.addEventListener('message', event => { if (event.origin !== 'https://www.youtube.com') return; let data; try { data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data; } catch { return; } if (data?.event === 'onStateChange' && data.info === 0) { const frame = [...document.querySelectorAll('#training-player iframe')].find(item => item.contentWindow === event.source); const title = document.getElementById('training-title-view')?.textContent; const item = trainings().find(training => training.title === title); if (item && frame) markMediaComplete(item.id, frame.id === 'training-video-frame' ? 'video' : 'audio'); } }); window.lucide?.createIcons(); }
     window.trainingRenderList = renderList;
     window.trainingRenderRanking = renderTrainingRanking;
+    function recoverTrainingNavigation() {
+        const nav = document.getElementById('mobile-navigation');
+        if (!nav) return;
+        let button = document.getElementById('nav-training');
+        if (!button) {
+            button = document.createElement('button');
+            button.id = 'nav-training';
+            button.type = 'button';
+            button.className = 'relative z-10 flex flex-1 flex-col items-center gap-1 rounded-xl py-1 text-slate-300';
+            button.innerHTML = '<i data-lucide="graduation-cap" class="h-6 w-6"></i><span class="text-[9px] font-black uppercase tracking-widest">Treino</span>';
+            nav.appendChild(button);
+        }
+        button.onclick = event => { event.preventDefault(); document.getElementById('fab-button')?.classList.add('hidden'); if (!document.getElementById('training-page')) buildShell(); openPage('training-page'); renderList(); renderTrainingRanking('month'); };
+        updateTrainingNavigation();
+        window.lucide?.createIcons();
+    }
+    window.recoverTrainingNavigation = recoverTrainingNavigation;
     document.addEventListener('click', event => { const button = event.target.closest?.('#training-page [data-ranking]'); if (button) renderTrainingRanking(button.dataset.ranking); });
     window.addEventListener('message', event => {
         let data; try { data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data; } catch { return; }
@@ -190,5 +207,6 @@
         if (timeLabel) timeLabel.textContent = `${Math.floor(current / 60)}:${String(Math.floor(current % 60)).padStart(2, '0')}`;
     });
     window.addEventListener('load', () => setTimeout(() => { window.trainingKey = KEY; window.trainingList = trainings; window.trainingWrite = write; window.trainingSession = session; window.trainingNormalizeQuestions = normalizeQuestions; window.trainingRenderManager = renderManager; init(); }, 1000));
+    window.addEventListener('load', () => setTimeout(() => { try { recoverTrainingNavigation(); } catch (error) { console.error('Falha ao inicializar o botão de treinamento:', error); } }, 1500));
     window.addEventListener('load', () => setTimeout(() => { if (!window.syncStoredList) return; const storedTrainings = read(KEY); const storedModules = read(MODULE_KEY).filter(item => item.id !== 'general'); if (storedTrainings.length) window.syncStoredList(KEY, storedTrainings); if (storedModules.length) window.syncStoredList(MODULE_KEY, storedModules); }, 1200));
 })();
