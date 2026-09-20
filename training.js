@@ -235,7 +235,8 @@
         }
         button.onclick = event => { event.preventDefault(); document.getElementById('fab-button')?.classList.add('hidden'); if (!document.getElementById('training-page')) buildShell(); openPage('training-page'); renderList(); renderTrainingRanking('day'); };
         bindQuizInteractions();
-        updateTrainingNavigation();
+        if (globalShowPage) globalShowPage('dashboard');
+        else updateTrainingNavigation();
         window.lucide?.createIcons();
     }
     window.recoverTrainingNavigation = recoverTrainingNavigation;
