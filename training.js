@@ -115,6 +115,8 @@
         pdf.classList.toggle('hidden', !training.pdfUrl);
         if (!training.pdfUrl) return;
         pdf.open = true;
+        const pdfToolbar = pdf.querySelector('div.border-b');
+        if (pdfToolbar) { pdfToolbar.style.display = 'flex'; pdfToolbar.style.flexWrap = 'nowrap'; pdfToolbar.style.alignItems = 'center'; pdfToolbar.style.gap = '0.5rem'; }
         try {
             const pdfjs = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs');
             pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs';
@@ -148,6 +150,24 @@
         return `<div class="relative rounded-2xl border border-slate-100 bg-slate-50 p-3"><div class="flex items-center gap-3"><button id="training-audio-toggle" type="button" class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-rose-600 text-white" aria-label="Reproduzir áudio"><i data-lucide="play" class="h-4 w-4"></i></button><input id="training-audio-progress" type="range" min="0" max="100" value="0" class="w-full accent-rose-600"><span id="training-audio-time" class="text-[10px] font-bold text-slate-400">0:00</span></div>${frame}</div>`;
     }
 
+    function enhanceAudioPlayer(trainingId) {
+        const frame = document.getElementById('training-audio-frame');
+        const toggle = document.getElementById('training-audio-toggle');
+        const progressInput = document.getElementById('training-audio-progress');
+        const timeLabel = document.getElementById('training-audio-time');
+        if (!frame || !toggle || !progressInput) return;
+        let playing = false;
+        let current = Number(progressInput.value || 0);
+        let lastTick = 0;
+        let timer;
+        const draw = () => { progressInput.value = current; timeLabel.textContent = `${Math.floor(current / 60)}:${String(Math.floor(current % 60)).padStart(2, '0')}`; };
+        const tick = timestamp => { if (!playing) return; if (lastTick) current += (timestamp - lastTick) / 1000; lastTick = timestamp; draw(); timer = requestAnimationFrame(tick); };
+        toggle.onclick = () => { playing = !playing; sendYoutubeCommand(frame, playing ? 'playVideo' : 'pauseVideo'); toggle.innerHTML = `<i data-lucide="${playing ? 'pause' : 'play'}" class="h-4 w-4"></i>`; window.lucide?.createIcons(); lastTick = 0; if (playing) timer = requestAnimationFrame(tick); else cancelAnimationFrame(timer); };
+        progressInput.oninput = () => { current = Number(progressInput.value); draw(); sendYoutubeCommand(frame, 'seekTo', [current, true]); };
+        draw();
+        window.lucide?.createIcons();
+    }
+
     function openTraining(id) {
         const training = trainings().find(item => item.id === id); if (!training) return;
         const data = progress(); const state = stateFor(training, data); data[id] = state; saveProgress(data);
@@ -157,8 +177,8 @@
         const audioPlayer = document.getElementById('training-audio-player'); if (audioPlayer) audioPlayer.onended = () => markMediaComplete(training.id, 'audio');
         const audioFrame = document.getElementById('training-audio-frame'); const audioToggle = document.getElementById('training-audio-toggle'); const audioProgress = document.getElementById('training-audio-progress');
         if (audioFrame) { const armAudio = () => { audioFrame.contentWindow?.postMessage(JSON.stringify({ event: 'listening', id: audioFrame.id, channel: 'widget' }), '*'); audioFrame.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'addEventListener', args: ['onStateChange'], id: audioFrame.id, channel: 'widget' }), '*'); }; audioFrame.addEventListener('load', armAudio); armAudio(); let playing = false; audioToggle.onclick = () => { playing = !playing; sendYoutubeCommand(audioFrame, playing ? 'playVideo' : 'pauseVideo'); audioToggle.innerHTML = `<i data-lucide="${playing ? 'pause' : 'play'}" class="h-4 w-4"></i>`; window.lucide?.createIcons(); }; audioProgress.oninput = () => sendYoutubeCommand(audioFrame, 'seekTo', [Number(audioProgress.value), true]); const poll = () => { if (!document.getElementById('training-audio-frame')) return; sendYoutubeCommand(audioFrame, 'getCurrentTime'); sendYoutubeCommand(audioFrame, 'getDuration'); setTimeout(poll, 1000); }; setTimeout(poll, 300); }
-        openPdfViewer(training); bindPdfControls();
-        if (!mediaDone(state)) document.getElementById('training-quiz').innerHTML = '<p class="rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-700">Veja pelo menos um conteúdo para liberar a enquete.</p>'; else if (training.questions.length) renderQuestion(training, state); else { state.completed = true; state.completedAt = new Date().toISOString(); saveProgress({ ...progress(), [training.id]: state }); document.getElementById('training-quiz').innerHTML = '<p class="rounded-xl bg-emerald-50 p-3 text-xs font-bold text-emerald-700">Treinamento concluído.</p>'; }
+        openPdfViewer(training); bindPdfControls(); enhanceAudioPlayer(training.id); window.lucide?.createIcons();
+        if (!mediaDone(state)) document.getElementById('training-quiz').innerHTML = '<div class="rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-700">Veja ou abra pelo menos um conteúdo para liberar a enquete.<button id="training-release" type="button" class="mt-3 w-full rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-black text-white">Liberar enquete</button></div>'; else if (training.questions.length) renderQuestion(training, state); else { state.completed = true; state.completedAt = new Date().toISOString(); saveProgress({ ...progress(), [training.id]: state }); document.getElementById('training-quiz').innerHTML = '<p class="rounded-xl bg-emerald-50 p-3 text-xs font-bold text-emerald-700">Treinamento concluído.</p>'; }
     }
 
     function renderRanking(period) {
@@ -193,6 +213,7 @@
             if (!training) return;
             const data = progress();
             const state = data[training.id];
+            if (event.target.closest('#training-release')) { event.stopImmediatePropagation(); state.media = true; state.mediaContent ||= {}; state.mediaContent.manual = true; saveProgress(data); renderQuestion(training, state); return; }
             if (choice && !state.answers[state.index]) {
                 event.stopImmediatePropagation();
                 const option = state.options[state.index][Number(choice.dataset.trainingChoice)];
@@ -236,7 +257,9 @@
         button.onclick = event => { event.preventDefault(); document.getElementById('fab-button')?.classList.add('hidden'); if (!document.getElementById('training-page')) buildShell(); openPage('training-page'); renderList(); renderTrainingRanking('day'); };
         bindQuizInteractions();
         if (globalShowPage) globalShowPage('dashboard');
-        else updateTrainingNavigation();
+        const indicator = document.getElementById('nav-indicator');
+        const buttons = [...document.querySelectorAll('#mobile-navigation > button')];
+        if (indicator && buttons.length) { indicator.style.width = `${100 / buttons.length}%`; indicator.style.left = '0%'; buttons.forEach(button => button.classList.toggle('bg-indigo-50', button.id === 'nav-inicio')); }
         window.lucide?.createIcons();
     }
     window.recoverTrainingNavigation = recoverTrainingNavigation;
